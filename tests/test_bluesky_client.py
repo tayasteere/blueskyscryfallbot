@@ -9,7 +9,9 @@ def _make_blob_ref() -> BlobRef:
     return BlobRef(mimeType="image/jpeg", size=1024, ref=b"fakecid")
 
 
-def _make_notification(uri, cid, reason, text, indexed_at, reply=None):
+def _make_notification(
+    uri, cid, reason, text, indexed_at, reply=None, author_did="did:plc:test"
+):
     n = MagicMock()
     n.uri = uri
     n.cid = cid
@@ -18,6 +20,8 @@ def _make_notification(uri, cid, reason, text, indexed_at, reply=None):
     n.record = MagicMock()
     n.record.text = text
     n.record.reply = reply
+    n.author = MagicMock()
+    n.author.did = author_did
     return n
 
 
@@ -181,7 +185,12 @@ def test_upload_image_returns_blob():
 
 def _make_mention_obj():
     return Mention(
-        uri="at://m1", cid="cm1", text="hi", root_uri="at://root", root_cid="croot"
+        uri="at://m1",
+        cid="cm1",
+        text="hi",
+        root_uri="at://root",
+        root_cid="croot",
+        author_did="did:plc:test",
     )
 
 
@@ -246,3 +255,66 @@ def test_reply_in_thread_calls_send_post_with_text():
     call_kwargs = agent.send_post.call_args.kwargs
     assert call_kwargs["text"] == "part 2"
     assert call_kwargs["reply_to"] is not None
+
+
+# ── author_did ────────────────────────────────────────────────────────────────
+
+
+def test_author_did_extracted_from_notification():
+    notifs = [
+        _make_notification(
+            "at://1", "c1", "mention", "hi", T_JAN2, author_did="did:plc:abc123"
+        )
+    ]
+    agent = _make_agent(notifs)
+    client = BlueskyClient(agent)
+    client._last_seen_at = T_BEFORE
+    m = client.get_new_mentions()[0]
+    assert m.author_did == "did:plc:abc123"
+
+
+# ── fetch_blocked_dids ────────────────────────────────────────────────────────
+
+
+def test_fetch_blocked_dids_returns_set_of_dids():
+    agent = _make_agent()
+    blocked1, blocked2 = MagicMock(did="did:plc:bad1"), MagicMock(did="did:plc:bad2")
+    agent.app.bsky.graph.get_blocks.return_value = MagicMock(
+        blocks=[blocked1, blocked2], cursor=None
+    )
+    client = BlueskyClient(agent)
+    result = client.fetch_blocked_dids()
+    assert result == {"did:plc:bad1", "did:plc:bad2"}
+
+
+def test_fetch_blocked_dids_paginates():
+    agent = _make_agent()
+    page1 = MagicMock(blocks=[MagicMock(did="did:plc:bad1")], cursor="next")
+    page2 = MagicMock(blocks=[MagicMock(did="did:plc:bad2")], cursor=None)
+    agent.app.bsky.graph.get_blocks.side_effect = [page1, page2]
+    client = BlueskyClient(agent)
+    result = client.fetch_blocked_dids()
+    assert result == {"did:plc:bad1", "did:plc:bad2"}
+    assert agent.app.bsky.graph.get_blocks.call_count == 2
+
+
+def test_fetch_blocked_dids_empty():
+    agent = _make_agent()
+    agent.app.bsky.graph.get_blocks.return_value = MagicMock(blocks=[], cursor=None)
+    client = BlueskyClient(agent)
+    assert client.fetch_blocked_dids() == set()
+
+
+# ── block_user ────────────────────────────────────────────────────────────────
+
+
+def test_block_user_calls_create_record():
+    agent = _make_agent()
+    agent.me.did = "did:plc:botdid"
+    client = BlueskyClient(agent)
+    client.block_user("did:plc:badactor")
+    agent.com.atproto.repo.create_record.assert_called_once()
+    call_args = agent.com.atproto.repo.create_record.call_args[0][0]
+    assert call_args.repo == "did:plc:botdid"
+    assert call_args.collection == "app.bsky.graph.block"
+    assert call_args.record.subject == "did:plc:badactor"

@@ -2,6 +2,8 @@ from unittest.mock import MagicMock, patch
 
 from bot.bluesky_client import Mention, PostRef
 from bot.bot import Bot
+from bot.config import BotConfig, RateLimitConfig
+from bot.rate_limiter import RateLimiter
 
 
 def _make_mention(
@@ -10,8 +12,16 @@ def _make_mention(
     cid="c1",
     root_uri="at://root",
     root_cid="croot",
+    author_did="did:plc:user1",
 ):
-    return Mention(uri=uri, cid=cid, text=text, root_uri=root_uri, root_cid=root_cid)
+    return Mention(
+        uri=uri,
+        cid=cid,
+        text=text,
+        root_uri=root_uri,
+        root_cid=root_cid,
+        author_did=author_did,
+    )
 
 
 def _make_bluesky(mentions=None):
@@ -42,10 +52,16 @@ def _make_card_lookup(card=None, rulings=None, image=None):
     return lookup
 
 
-def _make_bot(bluesky=None, card_lookup=None, sleep_fn=None):
+def _make_rate_limiter(blocked_dids=None):
+    return RateLimiter(RateLimitConfig(), blocked_dids=blocked_dids)
+
+
+def _make_bot(bluesky=None, card_lookup=None, rate_limiter=None, sleep_fn=None):
     return Bot(
         bluesky=bluesky or _make_bluesky(),
         card_lookup=card_lookup or _make_card_lookup(),
+        rate_limiter=rate_limiter or _make_rate_limiter(),
+        config=BotConfig(),
         sleep_fn=sleep_fn or (lambda _: None),
     )
 
@@ -415,6 +431,77 @@ def test_random_mode_error_sends_error_reply(mock_metric):
     bluesky.reply_to_mention.assert_called_once()
     text = bluesky.reply_to_mention.call_args[0][1]
     assert "went wrong" in text
+
+
+# ── rate limiting ─────────────────────────────────────────────────────────────
+
+
+@patch("bot.bot.record_metric")
+def test_rate_limited_mention_silently_dropped(mock_metric):
+    bluesky = _make_bluesky([_make_mention("[[Lightning Bolt]]")])
+    rate_limiter = MagicMock()
+    rate_limiter.record_mention.return_value = MagicMock(
+        allowed=False, should_warn=False, should_block=False
+    )
+    bot = _make_bot(bluesky=bluesky, rate_limiter=rate_limiter)
+    bot.process_mentions()
+    bluesky.reply_to_mention.assert_not_called()
+    mock_metric.assert_any_call("RateLimitDrop")
+
+
+@patch("bot.bot.record_metric")
+def test_rate_limit_warning_sends_reply(mock_metric):
+    bluesky = _make_bluesky([_make_mention("[[Lightning Bolt]]")])
+    rate_limiter = MagicMock()
+    rate_limiter.record_mention.return_value = MagicMock(
+        allowed=False, should_warn=True, should_block=False
+    )
+    bot = _make_bot(bluesky=bluesky, rate_limiter=rate_limiter)
+    bot.process_mentions()
+    bluesky.reply_to_mention.assert_called_once()
+    text = bluesky.reply_to_mention.call_args[0][1]
+    assert "slow down" in text
+    mock_metric.assert_any_call("RateLimitWarning")
+
+
+@patch("bot.bot.record_metric")
+def test_rate_limit_warning_reply_error_silently_caught(_):
+    bluesky = _make_bluesky([_make_mention("[[Lightning Bolt]]")])
+    bluesky.reply_to_mention.side_effect = RuntimeError("network error")
+    rate_limiter = MagicMock()
+    rate_limiter.record_mention.return_value = MagicMock(
+        allowed=False, should_warn=True, should_block=False
+    )
+    bot = _make_bot(bluesky=bluesky, rate_limiter=rate_limiter)
+    bot.process_mentions()  # must not raise
+
+
+@patch("bot.bot.record_metric")
+def test_block_calls_bluesky_block_user(mock_metric):
+    mention = _make_mention("[[Lightning Bolt]]", author_did="did:plc:badactor")
+    bluesky = _make_bluesky([mention])
+    rate_limiter = MagicMock()
+    rate_limiter.record_mention.return_value = MagicMock(
+        allowed=False, should_warn=False, should_block=True
+    )
+    bot = _make_bot(bluesky=bluesky, rate_limiter=rate_limiter)
+    bot.process_mentions()
+    bluesky.block_user.assert_called_once_with("did:plc:badactor")
+    bluesky.reply_to_mention.assert_not_called()
+    mock_metric.assert_any_call("UserBlocked")
+
+
+@patch("bot.bot.record_metric")
+def test_block_error_silently_caught(_):
+    mention = _make_mention("[[Lightning Bolt]]", author_did="did:plc:badactor")
+    bluesky = _make_bluesky([mention])
+    bluesky.block_user.side_effect = RuntimeError("api error")
+    rate_limiter = MagicMock()
+    rate_limiter.record_mention.return_value = MagicMock(
+        allowed=False, should_warn=False, should_block=True
+    )
+    bot = _make_bot(bluesky=bluesky, rate_limiter=rate_limiter)
+    bot.process_mentions()  # must not raise
 
 
 # ── start() ───────────────────────────────────────────────────────────────────

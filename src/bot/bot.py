@@ -12,12 +12,17 @@ from .card_formatter import (
     split_into_chunks,
 )
 from .card_lookup import CardLookup
+from .config import BotConfig
 from .metrics import record_metric
 from .query_parser import parse_card_queries
+from .rate_limiter import RateLimiter
 
-POLL_INTERVAL_S = 5.0
 MAX_POST_GRAPHEMES = 300
-MAX_CARDS_PER_MENTION = 4
+
+_RATE_LIMIT_WARNING = (
+    "You've been sending too many card lookup requests."
+    " Please slow down — if this continues you'll be blocked."
+)
 
 
 class Bot:
@@ -25,24 +30,49 @@ class Bot:
         self,
         bluesky: BlueskyClient,
         card_lookup: CardLookup,
-        poll_interval_s: float = POLL_INTERVAL_S,
+        rate_limiter: RateLimiter,
+        config: BotConfig | None = None,
         sleep_fn=None,
     ) -> None:
         self._bluesky = bluesky
         self._card_lookup = card_lookup
-        self._poll_interval_s = poll_interval_s
+        self._rate_limiter = rate_limiter
+        self._config = config or BotConfig()
         self._sleep = sleep_fn or time.sleep
 
     def process_mentions(self) -> None:
         mentions = self._bluesky.get_new_mentions()
 
         for mention in mentions:
+            decision = self._rate_limiter.record_mention(mention.author_did)
+
+            if decision.should_block:
+                record_metric("UserBlocked")
+                try:
+                    self._bluesky.block_user(mention.author_did)
+                except Exception as err:
+                    print(f"Failed to block user {mention.author_did}:", err)
+                continue
+
+            if decision.should_warn:
+                record_metric("RateLimitWarning")
+                try:
+                    self._bluesky.reply_to_mention(mention, _RATE_LIMIT_WARNING)
+                except Exception as err:
+                    print("Failed to send rate limit warning:", err)
+                continue
+
+            if not decision.allowed:
+                record_metric("RateLimitDrop")
+                continue
+
             queries = parse_card_queries(mention.text)
             if not queries:
                 continue
 
-            to_process = queries[:MAX_CARDS_PER_MENTION]
-            has_more = len(queries) > MAX_CARDS_PER_MENTION
+            max_cards = self._config.max_cards_per_mention
+            to_process = queries[:max_cards]
+            has_more = len(queries) > max_cards
             record_metric("MentionProcessed")
 
             for query in to_process:
@@ -118,7 +148,7 @@ class Bot:
                                     mention, card_display, image
                                 )
 
-                        case _:  # normal
+                        case _:  # normal and random
                             not_found = card_not_found_message(card_name)
                             full_text = format_card(card) if card else not_found
                             chunks = split_into_chunks(full_text, MAX_POST_GRAPHEMES)
@@ -163,7 +193,7 @@ class Bot:
 
             if has_more:
                 try:
-                    n = MAX_CARDS_PER_MENTION
+                    n = max_cards
                     limit_msg = (
                         f"Only {n} cards can be looked up per mention."
                         " Please send a new mention for the remaining cards."
@@ -175,10 +205,11 @@ class Bot:
     # Runs forever — polls for mentions, processes them sequentially to respect
     # Scryfall's 1 req/sec limit, then sleeps before the next cycle.
     def start(self) -> None:
-        print("Bot started, polling for mentions every 5s...")
+        print("Bot started, polling for mentions every"
+              f" {self._config.poll_interval_seconds}s...")
         while True:
             try:
                 self.process_mentions()
             except Exception as err:
                 print("Error during poll cycle:", err)
-            self._sleep(self._poll_interval_s)
+            self._sleep(self._config.poll_interval_seconds)

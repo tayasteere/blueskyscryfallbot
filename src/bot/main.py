@@ -8,9 +8,13 @@ from atproto import Client
 from .bluesky_client import BlueskyClient
 from .bot import Bot
 from .card_lookup import CardLookup
+from .config import load_config
+from .rate_limiter import RateLimiter
 
 # Resolves to the project root (three levels up from src/bot/main.py)
-_STATE_FILE = Path(__file__).parent.parent.parent / "state.json"
+_PROJECT_ROOT = Path(__file__).parent.parent.parent
+_STATE_FILE = _PROJECT_ROOT / "state.json"
+_CONFIG_FILE = _PROJECT_ROOT / "config.toml"
 
 
 class _FileStateStore:
@@ -40,12 +44,17 @@ def main() -> None:
             " SCRYFALL_USER_AGENT"
         )
 
+    config = load_config(_CONFIG_FILE)
+
     agent = Client()
     bluesky = BlueskyClient(agent, _FileStateStore(_STATE_FILE))
     bluesky.login(handle, password)
 
+    blocked_dids = bluesky.fetch_blocked_dids()
+    rate_limiter = RateLimiter(config.rate_limiting, blocked_dids=blocked_dids)
+
     card_lookup = CardLookup(user_agent=user_agent)
-    bot = Bot(bluesky, card_lookup)
+    bot = Bot(bluesky, card_lookup, rate_limiter, config)
     bot.start()
 
 

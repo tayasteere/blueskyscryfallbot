@@ -1,0 +1,10 @@
+[bot]
+poll_interval_seconds = 5
+max_cards_per_mention = 4
+
+[rate_limiting]
+window_seconds = 60
+max_mentions_per_window = 5
+violation_window_seconds = 600
+violations_before_warning = 3
+violations_before_block = 5

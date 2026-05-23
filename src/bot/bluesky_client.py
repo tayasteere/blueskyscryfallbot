@@ -14,6 +14,7 @@ class Mention:
     text: str
     root_uri: str
     root_cid: str
+    author_did: str
 
 
 @dataclass
@@ -87,6 +88,34 @@ class BlueskyClient:
             text=text,
             root_uri=root_uri,
             root_cid=root_cid,
+            author_did=notification.author.did,
+        )
+
+    def fetch_blocked_dids(self) -> set[str]:
+        blocked: set[str] = set()
+        cursor: str | None = None
+        while True:
+            params: dict = {"limit": 100}
+            if cursor:
+                params["cursor"] = cursor
+            response = self._agent.app.bsky.graph.get_blocks(params=params)
+            for profile in response.blocks:
+                blocked.add(profile.did)
+            cursor = getattr(response, "cursor", None)
+            if not cursor:
+                break
+        return blocked
+
+    def block_user(self, did: str) -> None:
+        self._agent.com.atproto.repo.create_record(
+            models.ComAtprotoRepoCreateRecord.Data(
+                repo=self._agent.me.did,
+                collection="app.bsky.graph.block",
+                record=models.AppBskyGraphBlock.Record(
+                    subject=did,
+                    created_at=_now_iso(),
+                ),
+            )
         )
 
     def upload_image(self, data: bytes, mime_type: str) -> BlobRef:  # noqa: ARG002

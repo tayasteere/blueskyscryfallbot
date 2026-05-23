@@ -65,6 +65,35 @@ python -m bot.main
 
 The bot polls for new mentions every 5 seconds. On first run it skips all pre-existing notifications; on subsequent runs it resumes from `state.json` in the project root.
 
+## Configuration
+
+Bot behaviour can be tuned by placing a `config.toml` file in the project root. All keys are optional — omitting a key uses the default shown below.
+
+```toml
+[bot]
+poll_interval_seconds = 5   # how often to check for new mentions
+max_cards_per_mention = 4   # maximum cards looked up in a single mention
+
+[rate_limiting]
+window_seconds = 60              # length of the rate limit window
+max_mentions_per_window = 5      # mentions allowed per user per window
+violation_window_seconds = 600   # window over which violations are counted
+violations_before_warning = 3    # violations before a warning reply is sent
+violations_before_block = 5      # violations before the user is blocked
+```
+
+If no `config.toml` is present the defaults above are used.
+
+## Abuse prevention
+
+The bot tracks mentions per user and enforces a rate limit to prevent spam.
+
+- **Rate limiting** — each user may send up to 5 mentions per 60-second window. Mentions beyond this are silently dropped.
+- **Warnings** — after 3 rate limit violations within a 10-minute window, the user receives a single warning reply.
+- **Blocking** — after 5 violations, the user is permanently blocked via the Bluesky API. Blocks persist across restarts; the bot fetches the existing block list from Bluesky on startup.
+
+All thresholds are configurable via `config.toml`.
+
 ## Development
 
 Install dev dependencies:
@@ -92,10 +121,12 @@ ruff check src tests
 src/bot/
   main.py           — entry point, wires up dependencies
   bot.py            — poll loop and mention processing logic
-  bluesky_client.py — atproto wrapper (auth, notifications, replies)
+  bluesky_client.py — atproto wrapper (auth, notifications, replies, blocks)
   card_lookup.py    — Scryfall API client with rate limiting
   card_formatter.py — formats card data into reply text
   query_parser.py   — parses [[card]] syntax from post text
+  rate_limiter.py   — per-user rate limiting and block decisions
+  config.py         — configuration dataclasses and config.toml loader
   metrics.py        — lightweight metric recording
 ```
 
@@ -103,6 +134,6 @@ src/bot/
 
 Copyright 2026 Taya Steere. Licensed under the [Apache License, Version 2.0](LICENSE).
 
-## Rate limiting
+## Scryfall API rate limiting
 
 The bot enforces Scryfall's 1 request/second policy between API calls and backs off 30 seconds on HTTP 429 responses.

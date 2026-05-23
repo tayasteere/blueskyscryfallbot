@@ -21,6 +21,10 @@ htmlcov/
 # Runtime state
 state.json
 
+# Environment / credentials
+.env
+.env.*
+
 # IDE
 .vscode/
 .idea/

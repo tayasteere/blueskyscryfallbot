@@ -7,7 +7,7 @@ A Bluesky bot that looks up Magic: The Gathering cards via the [Scryfall API](ht
 Mention the bot in any Bluesky post with card names wrapped in double brackets:
 
 ```
-@yourbot.bsky.social [[Lightning Bolt]]
+@scryfallbot.bsky.social [[Lightning Bolt]]
 ```
 
 ### Query syntax
@@ -98,6 +98,10 @@ src/bot/
   query_parser.py   — parses [[card]] syntax from post text
   metrics.py        — lightweight metric recording
 ```
+
+## License
+
+Copyright 2026 Taya Steere. Licensed under the [Apache License, Version 2.0](LICENSE).
 
 ## Rate limiting
 

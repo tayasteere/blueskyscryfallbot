@@ -36,7 +36,8 @@ def main() -> None:
 
     if not handle or not password or not user_agent:
         raise RuntimeError(
-            "Required env vars: BLUESKY_HANDLE, BLUESKY_APP_PASSWORD, SCRYFALL_USER_AGENT"
+            "Required env vars: BLUESKY_HANDLE, BLUESKY_APP_PASSWORD,"
+            " SCRYFALL_USER_AGENT"
         )
 
     agent = Client()

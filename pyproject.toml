@@ -5,11 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "scryfallbot"
 version = "0.1.0"
+description = "A Bluesky bot that looks up Magic: The Gathering cards via the Scryfall API"
+license = "Apache-2.0"
+authors = [
+    { name = "Taya Steere" }
+]
 requires-python = ">=3.11"
 dependencies = [
     "atproto==0.0.65",
     "httpx==0.28.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/tayasteere/blueskyscryfallbot"
 
 [project.optional-dependencies]
 dev = [

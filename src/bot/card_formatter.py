@@ -1,0 +1,151 @@
+from .card_lookup import CardData, CardPrices, Ruling
+
+_MAJOR_FORMATS: list[tuple[str, str]] = [
+    ("standard", "Standard"),
+    ("pioneer", "Pioneer"),
+    ("modern", "Modern"),
+    ("legacy", "Legacy"),
+    ("vintage", "Vintage"),
+    ("commander", "Commander"),
+    ("pauper", "Pauper"),
+    ("historic", "Historic"),
+]
+
+_LEGALITY_LABELS: dict[str, str] = {
+    "legal": "Legal",
+    "not_legal": "Not Legal",
+    "banned": "Banned",
+    "restricted": "Restricted",
+}
+
+_MAX_DISPLAY_GRAPHEMES = 50
+
+
+def format_card(card: CardData) -> str:
+    name = card.get("name", "")
+    mana_cost = card.get("mana_cost")
+    name_line = f"{name} {mana_cost}" if mana_cost else name
+
+    set_code = card.get("set")
+    meta_parts = [
+        p
+        for p in [
+            card.get("type_line"),
+            card.get("rarity"),
+            set_code.upper() if set_code else None,
+        ]
+        if p
+    ]
+    meta_line = " · ".join(meta_parts)
+
+    parts = [p for p in [name_line, meta_line, card.get("oracle_text")] if p]
+    return "\n".join(parts)
+
+
+def split_into_chunks(text: str, limit: int) -> list[str]:
+    chars = list(text)
+    if len(chars) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    start = 0
+
+    while start < len(chars):
+        if len(chars) - start <= limit:
+            chunks.append("".join(chars[start:]))
+            break
+
+        # Search backwards from limit for a whitespace boundary
+        break_at = limit
+        while break_at > 0 and chars[start + break_at] not in (" ", "\n"):
+            break_at -= 1
+
+        if break_at == 0:
+            break_at = limit
+
+        chunks.append("".join(chars[start : start + break_at]))
+        start += break_at
+
+        while start < len(chars) and chars[start] in (" ", "\n"):
+            start += 1
+
+    return chunks
+
+
+def format_prices(card: CardData) -> str:
+    name = card.get("name", "")
+    set_code = card.get("set")
+    meta_parts = [
+        p
+        for p in [
+            card.get("set_name"),
+            card.get("rarity"),
+            set_code.upper() if set_code else None,
+        ]
+        if p
+    ]
+    header = f"{name} — {' · '.join(meta_parts)}"
+
+    prices: CardPrices = card.get("prices") or {}
+
+    non_foil: list[str] = []
+    if prices.get("usd"):
+        non_foil.append(f"${prices['usd']}")
+    if prices.get("eur"):
+        non_foil.append(f"€{prices['eur']}")
+    if prices.get("tix"):
+        non_foil.append(f"{prices['tix']} TIX")
+
+    foil: list[str] = []
+    if prices.get("usd_foil"):
+        foil.append(f"${prices['usd_foil']}")
+    if prices.get("usd_etched"):
+        foil.append(f"${prices['usd_etched']} (etched)")
+    if prices.get("eur_foil"):
+        foil.append(f"€{prices['eur_foil']}")
+
+    lines = [header]
+    if non_foil:
+        lines.append(" • ".join(non_foil))
+    if foil:
+        lines.append(f"Foil: {' • '.join(foil)}")
+    if not non_foil and not foil:
+        lines.append("No price data available.")
+
+    return "\n".join(lines)
+
+
+def format_legalities(card: CardData) -> str:
+    header = f"{card.get('name', '')} — Legalities"
+    legalities: dict[str, str] = card.get("legalities") or {}
+    lines = []
+    for key, label in _MAJOR_FORMATS:
+        status = _LEGALITY_LABELS.get(legalities.get(key, "not_legal"), "Not Legal")
+        lines.append(f"{label}: {status}")
+    return "\n".join([header, *lines])
+
+
+def format_rulings(card: CardData, rulings: list[Ruling]) -> str:
+    header = f"Rulings for {card.get('name', '')}"
+    if not rulings:
+        return f"{header}\nNo official rulings."
+    lines = [f"{r['published_at']}: {r['comment']}" for r in rulings]
+    return "\n\n".join([header, *lines])
+
+
+def scryfall_error_message(card_name: str) -> str:
+    chars = list(card_name)
+    display = "".join(chars[:_MAX_DISPLAY_GRAPHEMES])
+    if len(chars) > _MAX_DISPLAY_GRAPHEMES:
+        display += "…"
+    return f'Something went wrong looking up "{display}". Please try again later.'
+
+
+def card_not_found_message(card_name: str) -> str:
+    chars = list(card_name)
+    display = "".join(chars[:_MAX_DISPLAY_GRAPHEMES])
+    if len(chars) > _MAX_DISPLAY_GRAPHEMES:
+        display += "…"
+    return (
+        f'Could not determine the card based on "{display}". Please be more specific.'
+    )

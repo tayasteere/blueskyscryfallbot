@@ -1,0 +1,248 @@
+from unittest.mock import MagicMock
+
+from atproto_client.models.blob_ref import BlobRef
+
+from bot.bluesky_client import BlueskyClient, Mention, PostRef
+
+
+def _make_blob_ref() -> BlobRef:
+    return BlobRef(mimeType="image/jpeg", size=1024, ref=b"fakecid")
+
+
+def _make_notification(uri, cid, reason, text, indexed_at, reply=None):
+    n = MagicMock()
+    n.uri = uri
+    n.cid = cid
+    n.reason = reason
+    n.indexed_at = indexed_at
+    n.record = MagicMock()
+    n.record.text = text
+    n.record.reply = reply
+    return n
+
+
+T_OLD = "2020-01-01T00:00:00.000Z"
+T_BEFORE = "2030-01-01T00:00:00.000Z"
+T_JAN2 = "2030-01-02T00:00:00.000Z"
+T_JAN3 = "2030-01-03T00:00:00.000Z"
+T_JAN5 = "2030-01-05T00:00:00.000Z"
+
+
+def _make_agent(notifications=None):
+    agent = MagicMock()
+    agent.app.bsky.notification.list_notifications.return_value = MagicMock(
+        notifications=notifications or []
+    )
+    agent.send_post.return_value = MagicMock(uri="at://post/1", cid="cid1")
+    agent.upload_blob.return_value = MagicMock(blob=_make_blob_ref())
+    return agent
+
+
+# ── login ─────────────────────────────────────────────────────────────────────
+
+
+def test_login_delegates_to_agent():
+    agent = _make_agent()
+    client = BlueskyClient(agent)
+    client.login("user.bsky.social", "app-password")
+    agent.login.assert_called_once_with("user.bsky.social", "app-password")
+
+
+# ── cold start ────────────────────────────────────────────────────────────────
+
+
+def test_cold_start_skips_old_notifications():
+    notif = _make_notification("at://old", "c0", "mention", "hi", T_OLD)
+    agent = _make_agent([notif])
+    client = BlueskyClient(agent)
+    # _last_seen_at is set to now, which is after 2020, so old notif is filtered out
+    mentions = client.get_new_mentions()
+    assert mentions == []
+
+
+def test_state_store_cursor_loaded_on_init():
+    store = MagicMock()
+    store.load.return_value = "2025-01-01T00:00:00.000Z"
+    agent = _make_agent()
+    client = BlueskyClient(agent, store)
+    assert client._last_seen_at == "2025-01-01T00:00:00.000Z"
+
+
+def test_no_state_store_defaults_to_now():
+    agent = _make_agent()
+    client = BlueskyClient(agent)
+    # Should be a recent ISO timestamp
+    assert "2026" in client._last_seen_at or "2025" in client._last_seen_at
+
+
+# ── get_new_mentions ──────────────────────────────────────────────────────────
+
+
+def test_returns_only_mention_notifications():
+    notifs = [
+        _make_notification("at://1", "c1", "mention", "hello", T_JAN2),
+        _make_notification("at://2", "c2", "like", "liked", T_JAN2),
+    ]
+    agent = _make_agent(notifs)
+    client = BlueskyClient(agent)
+    client._last_seen_at = T_BEFORE
+    mentions = client.get_new_mentions()
+    assert len(mentions) == 1
+    assert mentions[0].uri == "at://1"
+
+
+def test_filters_by_cursor():
+    notifs = [
+        _make_notification("at://new", "c1", "mention", "hi", T_JAN3),
+        _make_notification("at://old", "c2", "mention", "old", T_BEFORE),
+    ]
+    agent = _make_agent(notifs)
+    client = BlueskyClient(agent)
+    client._last_seen_at = T_JAN2
+    mentions = client.get_new_mentions()
+    assert len(mentions) == 1
+    assert mentions[0].uri == "at://new"
+
+
+def test_cursor_advances_to_latest():
+    notifs = [
+        _make_notification("at://1", "c1", "mention", "hi", T_JAN5),
+    ]
+    agent = _make_agent(notifs)
+    store = MagicMock()
+    store.load.return_value = T_BEFORE
+    client = BlueskyClient(agent, store)
+    client.get_new_mentions()
+    assert client._last_seen_at == T_JAN5
+    store.save.assert_called_once_with(T_JAN5)
+
+
+def test_cursor_not_saved_when_no_state_store():
+    notifs = [
+        _make_notification("at://1", "c1", "mention", "hi", T_JAN5),
+    ]
+    agent = _make_agent(notifs)
+    client = BlueskyClient(agent)
+    client._last_seen_at = T_BEFORE
+    client.get_new_mentions()  # should not raise
+
+
+def test_mention_text_extracted():
+    notifs = [
+        _make_notification("at://1", "c1", "mention", "check [[Bolt]]", T_JAN2),
+    ]
+    agent = _make_agent(notifs)
+    client = BlueskyClient(agent)
+    client._last_seen_at = T_BEFORE
+    mentions = client.get_new_mentions()
+    assert mentions[0].text == "check [[Bolt]]"
+
+
+def test_root_ref_defaults_to_mention_when_not_a_reply():
+    notifs = [
+        _make_notification("at://1", "c1", "mention", "hi", T_JAN2, reply=None),
+    ]
+    agent = _make_agent(notifs)
+    client = BlueskyClient(agent)
+    client._last_seen_at = T_BEFORE
+    m = client.get_new_mentions()[0]
+    assert m.root_uri == "at://1"
+    assert m.root_cid == "c1"
+
+
+def test_root_ref_from_reply_when_nested():
+    reply_mock = MagicMock()
+    reply_mock.root.uri = "at://root"
+    reply_mock.root.cid = "croot"
+    notifs = [
+        _make_notification("at://1", "c1", "mention", "hi", T_JAN2, reply=reply_mock),
+    ]
+    agent = _make_agent(notifs)
+    client = BlueskyClient(agent)
+    client._last_seen_at = "2030-01-01T00:00:00.000Z"
+    m = client.get_new_mentions()[0]
+    assert m.root_uri == "at://root"
+    assert m.root_cid == "croot"
+
+
+# ── upload_image ──────────────────────────────────────────────────────────────
+
+
+def test_upload_image_returns_blob():
+    agent = _make_agent()
+    client = BlueskyClient(agent)
+    blob = client.upload_image(b"\xff\xd8image", "image/jpeg")
+    assert isinstance(blob, BlobRef)
+    agent.upload_blob.assert_called_once_with(b"\xff\xd8image")
+
+
+# ── reply_to_mention ──────────────────────────────────────────────────────────
+
+
+def _make_mention_obj():
+    return Mention(
+        uri="at://m1", cid="cm1", text="hi", root_uri="at://root", root_cid="croot"
+    )
+
+
+def test_reply_to_mention_calls_send_post():
+    agent = _make_agent()
+    client = BlueskyClient(agent)
+    client.reply_to_mention(_make_mention_obj(), "Hello!")
+    agent.send_post.assert_called_once()
+    call_kwargs = agent.send_post.call_args.kwargs
+    assert call_kwargs["text"] == "Hello!"
+    assert call_kwargs["reply_to"] is not None
+
+
+def test_reply_to_mention_returns_post_ref():
+    agent = _make_agent()
+    client = BlueskyClient(agent)
+    result = client.reply_to_mention(_make_mention_obj(), "Hello!")
+    assert isinstance(result, PostRef)
+    assert result.uri == "at://post/1"
+    assert result.cid == "cid1"
+
+
+def test_reply_to_mention_with_image_passes_embed():
+    agent = _make_agent()
+    client = BlueskyClient(agent)
+    client.reply_to_mention(
+        _make_mention_obj(),
+        "Card!",
+        image={"blob": _make_blob_ref(), "alt": "alt text"},
+    )
+    call_kwargs = agent.send_post.call_args.kwargs
+    assert call_kwargs.get("embed") is not None
+
+
+def test_reply_to_mention_without_image_no_embed():
+    agent = _make_agent()
+    client = BlueskyClient(agent)
+    client.reply_to_mention(_make_mention_obj(), "Hello!")
+    call_kwargs = agent.send_post.call_args.kwargs
+    assert call_kwargs.get("embed") is None
+
+
+# ── reply_in_thread ───────────────────────────────────────────────────────────
+
+
+def test_reply_in_thread_returns_post_ref():
+    agent = _make_agent()
+    client = BlueskyClient(agent)
+    root = PostRef(uri="at://root", cid="croot")
+    parent = PostRef(uri="at://parent", cid="cparent")
+    result = client.reply_in_thread(root, parent, "continuation")
+    assert isinstance(result, PostRef)
+    assert result.uri == "at://post/1"
+
+
+def test_reply_in_thread_calls_send_post_with_text():
+    agent = _make_agent()
+    client = BlueskyClient(agent)
+    root = PostRef(uri="at://root", cid="croot")
+    parent = PostRef(uri="at://parent", cid="cparent")
+    client.reply_in_thread(root, parent, "part 2")
+    call_kwargs = agent.send_post.call_args.kwargs
+    assert call_kwargs["text"] == "part 2"
+    assert call_kwargs["reply_to"] is not None
